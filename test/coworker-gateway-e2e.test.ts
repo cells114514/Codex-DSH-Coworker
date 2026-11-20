@@ -40,7 +40,7 @@ after(async () => {
 
 const modelCatalog = { current: { provider: "deepseek-official", model: "deepseek-v4.1-flash" }, default: { provider: "deepseek-official", model: "deepseek-v4.1-flash" }, routable: true, groups: [], failures: [] };
 
-function fakeHost() {
+function fakeHost(dshHome: string, cwd: string) {
   const calls = [];
   const events = [];
   let seq = 5;
@@ -51,11 +51,11 @@ function fakeHost() {
     events,
     async hostDescribe() {
       calls.push("hostDescribe");
-      return attachDshUnaryMetadata({ version: "0.2.1-rc.2", dshHome: "/tmp", profile: "gateway" }, { issuedRpcId: "r1", method: "host.describe" });
+      return attachDshUnaryMetadata({ version: "0.2.1-rc.2", dshHome, profile: "gateway" }, { issuedRpcId: "r1", method: "host.describe" });
     },
     async sessionList() {
       calls.push("sessionList");
-      return attachDshUnaryMetadata({ items: [{ sessionId: SESSION, updatedAt: UPDATED_AT, cwd: "/tmp", title: "简单回复数字1", origin: "root", status: "idle" }] }, { issuedRpcId: "r2", method: "session.list" });
+      return attachDshUnaryMetadata({ items: [{ sessionId: SESSION, updatedAt: UPDATED_AT, cwd, title: "简单回复数字1", origin: "root", status: "idle" }] }, { issuedRpcId: "r2", method: "session.list" });
     },
     async sessionModels() {
       calls.push("sessionModels");
@@ -122,14 +122,16 @@ async function harness() {
   const root = await mkdtemp(join(tmpdir(), "gw-e2e-"));
   const dshHome = join(root, "dsh-home");
   const bridgeHome = join(root, "bridge-home");
+  const cwd = join(root, "workspace");
   await mkdir(dshHome, { recursive: true });
+  await mkdir(cwd);
   const config = loadConfig({
     DSH_HOST_PROTOCOL: "gateway",
     DSH_HOME: dshHome,
     DSH_BRIDGE_HOME: bridgeHome,
     DSH_REQUEST_TIMEOUT_MS: "5000",
   });
-  const api = fakeHost();
+  const api = fakeHost(dshHome, cwd);
   const tasks = new TaskStore(config.homeDir);
   const ledger = new EventLedger(config.homeDir);
   const connection = fakeConnection({ sessionId: SESSION, origin: "root", found: true, running: false });

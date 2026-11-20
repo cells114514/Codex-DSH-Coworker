@@ -1041,7 +1041,6 @@ export class SdkDshClient implements DshApi {
         this.waiters.set(taskId, current.filter((candidate) => candidate !== waiter));
         resolve(true);
       }, waitMs);
-      timer.unref?.();
     });
     return { timedOut };
   }
@@ -1695,7 +1694,6 @@ export class SdkDshClient implements DshApi {
           await this.recordResolved(taskId, pending, "cancelled");
         })();
       }, this.approvalTimeoutMs);
-      timer.unref?.();
       state.pending.set(requestId, {
         kind: "approval",
         taskId,
@@ -1759,7 +1757,6 @@ export class SdkDshClient implements DshApi {
           await this.recordResolved(taskId, pending, "cancelled");
         })();
       }, this.approvalTimeoutMs);
-      timer.unref?.();
       const pending: PendingQuestion = {
         kind: "question",
         taskId,

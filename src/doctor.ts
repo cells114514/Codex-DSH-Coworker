@@ -616,7 +616,6 @@ export async function probeSdkRuntime(config: BridgeConfig, options: SdkProbeOpt
       handshake,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error(`the SDK live probe exceeded its ${boundMs} ms bound`)), boundMs);
-        timer.unref?.();
       }),
     ]);
     const result: SdkProbeResult = {

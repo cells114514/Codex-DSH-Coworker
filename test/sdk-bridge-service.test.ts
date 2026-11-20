@@ -275,9 +275,10 @@ describe("sdk bridge service", () => {
   it("waits for the observed turn to end", async () => {
     const s = await system(streamingScript);
     const delegated = await s.service.delegate({ prompt: "wait for me", cwd: s.cwd, waitSeconds: 0 });
-    const waited = await s.service.wait(delegated.taskId, 5);
-    assert.equal(waited.timedOut, false);
-    assert.equal(waited.status.execution, "turn_completed");
+    const watched = await s.service.watch(delegated.taskId, 5);
+    assert.equal(watched.timedOut, false);
+    assert.equal(watched.reason, "terminal");
+    assert.equal(watched.execution, "turn_completed");
   });
 
   it("watches through ordinary log traffic without returning conversation bodies", async () => {
