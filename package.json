@@ -1,0 +1,86 @@
+{
+  "name": "dsh-agentlink",
+  "version": "0.1.0-alpha.7",
+  "private": true,
+  "description": "Codex and DeepSeek Harness collaboration through Desktop Gateway or SDK, with completion callbacks to Codex.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cells114514/Codex-DSH-Coworker.git"
+  },
+  "homepage": "https://github.com/cells114514/Codex-DSH-Coworker",
+  "bugs": {
+    "url": "https://github.com/cells114514/Codex-DSH-Coworker/issues"
+  },
+  "keywords": [
+    "codex",
+    "claude-code",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "mcp",
+    "agent-link",
+    "agent-harness",
+    "agent-collaboration"
+  ],
+  "type": "module",
+  "files": [
+    "dist/",
+    "docs/architecture.md",
+    "docs/architecture.zh-CN.md",
+    "docs/caller-integration-architecture.md",
+    "docs/caller-integration-architecture.zh-CN.md",
+    "docs/deferred-roadmap.md",
+    "docs/deferred-roadmap.zh-CN.md",
+    "docs/manual-configuration.md",
+    "docs/manual-configuration.zh-CN.md",
+    "docs/official-desktop-gateway.md",
+    "docs/operator-tools/",
+    "docs/release-checklist.md",
+    "docs/sdk-backend.md",
+    "docs/sdk-backend.zh-CN.md",
+    "docs/sdk-delivery-report.zh-CN.md",
+    "docs/sdk-live-acceptance-results.md",
+    "docs/sdk-qualification.md",
+    "docs/validation.md",
+    "skill/",
+    "README.md",
+    "README.zh-CN.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "KNOWN_ISSUES.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "bin": {
+    "dsh-agentlink": "dist/index.js",
+    "dsh-agentlink-doctor": "dist/doctor.js",
+    "dsh-agentlink-setup": "dist/setup-codex.js",
+    "dsh-agentlink-setup-claude": "dist/setup-claude-code.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "doctor": "tsx src/doctor.ts",
+    "setup": "npm run build && node dist/setup-codex.js",
+    "setup:claude": "npm run build && node dist/setup-claude-code.js",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "check": "npm run build && npm test",
+    "prepack": "npm run check"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-sdk-client": "0.2.2-rc.3",
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "ws": "^8.18.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}

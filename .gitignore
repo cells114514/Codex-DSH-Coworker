@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.DS_Store
+coverage/
+*.log
+*.tgz
+.env
+.env.*
+.dsh-bridge/
+/.agents/skills/codex-dsh-orchestrator/
+/dist-cw/

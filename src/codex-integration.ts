@@ -1,0 +1,395 @@
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+
+import type { CallerCapabilities, CallerIntegration, InstallPlan, UpsertMcpServerOperation } from "./caller-integration.js";
+
+export const CODEX_CALLER_ID = "codex";
+export const CODEX_SERVER_NAME = "dsh_agentlink";
+export const CODEX_LEGACY_SERVER_NAMES = ["dsh_collab"] as const;
+export const CODEX_BRIDGE_SERVER_NAMES = [CODEX_SERVER_NAME, ...CODEX_LEGACY_SERVER_NAMES] as const;
+export const CODEX_RESTART_HINT =
+  "Restart Codex to load dsh-Agentlink and discover the repository skill at .agents/skills/codex-dsh-orchestrator. Skill installation does not prove DSH Host connectivity, login, permissions, or end-to-end execution.";
+
+const CODEX_CAPABILITIES: CallerCapabilities = {
+  mcpStdio: true,
+  configScopes: ["user", "explicit-file"],
+  instructionInstall: "native",
+  humanApprovalPrompt: "supported",
+  legacyMigration: true,
+  restartRequired: true,
+};
+
+/**
+ * SDK backend settings the installer may forward.
+ *
+ * Only fields the caller explicitly supplied are rendered; `bridgeHome` is
+ * present only when the user passed one, so the installer never forces (or
+ * repoints) `DSH_BRIDGE_HOME`.
+ */
+export interface SdkRenderConfig {
+  /** DSH home passed to the bridge as `DSH_HOME`; contains profiles, sessions, persistence, and credentials. */
+  dshHome: string;
+  /** Runtime profile serving the SDK JSON-RPC server (`DSH_SDK_PROFILE`). */
+  profile: string;
+  /** CLI module path (`DSH_SDK_BIN`) — resolved lexically, never a shell command. */
+  bin?: string;
+  provider?: string;
+  model?: string;
+  reasoningEffort?: string;
+  maxRuntimes?: number;
+  idleTimeoutMs?: number;
+  initializeTimeoutMs?: number;
+  shutdownTimeoutMs?: number;
+  bridgeHome?: string;
+}
+
+interface RenderMcpConfigBaseOptions {
+  entryPath: string;
+  nodePath: string;
+  dshVersion?: string;
+  preset?: string;
+  hostProtocol?: "legacy" | "gateway" | "sdk";
+  sdk?: SdkRenderConfig;
+}
+
+export type RenderMcpConfigOptions = RenderMcpConfigBaseOptions &
+  (
+    | {
+        hostUrl: string;
+        hostMode?: "static";
+      }
+    | {
+        hostMode: "desktop-auto";
+        hostUrl?: never;
+      }
+    | {
+        hostProtocol: "sdk";
+        sdk: SdkRenderConfig;
+        hostUrl?: never;
+        hostMode?: never;
+      }
+  );
+
+export type CodexInstallPlanOptions = RenderMcpConfigOptions & {
+  configPath: string;
+  replace: boolean;
+};
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+export function renderCodexOperation(operation: UpsertMcpServerOperation): string {
+  const env = Object.entries(operation.env).map(([name, value]) => `${name} = ${tomlString(value)}`);
+  return [
+    `[mcp_servers.${operation.serverName}]`,
+    `command = ${tomlString(operation.command)}`,
+    `args = [${operation.args.map((argument) => tomlString(argument)).join(", ")}]`,
+    ...(operation.envVars === undefined ? [] : [`env_vars = [${operation.envVars.map(tomlString).join(", ")}]`]),
+    "",
+    `[mcp_servers.${operation.serverName}.env]`,
+    ...env,
+    "",
+    `[mcp_servers.${operation.serverName}.tools.${operation.humanApproval.toolName}]`,
+    `approval_mode = ${tomlString(operation.humanApproval.mode === "human-prompt" ? "prompt" : operation.humanApproval.mode)}`,
+  ].join("\n");
+}
+
+export function renderMcpConfig(options: RenderMcpConfigOptions): string {
+  return renderCodexOperation(createCodexOperation({ ...options, replace: false }));
+}
+
+function tableHeader(line: string): { name: string; array: boolean } | undefined {
+  const match = /^\s*(\[\[|\[)([^\[\]]+)(\]\]|\])\s*(?:#.*)?$/.exec(line);
+  if (match === null) return undefined;
+  const open = match[1];
+  const name = match[2];
+  const close = match[3];
+  if (open === undefined || name === undefined || close === undefined) return undefined;
+  const array = open === "[[";
+  if ((array && close !== "]]") || (!array && close !== "]")) return undefined;
+  return { name: name.replace(/\s+/g, ""), array };
+}
+
+function tableName(line: string): string | undefined {
+  const header = tableHeader(line);
+  return header?.array === false ? header.name : undefined;
+}
+
+function anyTableName(line: string): string | undefined {
+  return tableHeader(line)?.name;
+}
+
+function isBridgeTable(name: string): boolean {
+  return CODEX_BRIDGE_SERVER_NAMES.some(
+    (serverName) =>
+      name === `mcp_servers.${serverName}` ||
+      name.startsWith(`mcp_servers.${serverName}.`) ||
+      name === `mcp_servers."${serverName}"` ||
+      name.startsWith(`mcp_servers."${serverName}".`),
+  );
+}
+
+export function hasBridgeConfig(config: string): boolean {
+  return config.split(/\r?\n/).some((line) => {
+    const name = anyTableName(line);
+    return name !== undefined && isBridgeTable(name);
+  });
+}
+
+export function extractBridgeConfig(config: string): string | undefined {
+  const collected: string[] = [];
+  let collecting = false;
+  let found = false;
+  for (const line of config.split(/\r?\n/)) {
+    const name = anyTableName(line);
+    if (name !== undefined) collecting = isBridgeTable(name);
+    if (collecting) {
+      found = true;
+      collected.push(line);
+    }
+  }
+  return found ? collected.join("\n").trim() : undefined;
+}
+
+function rejectUnsupportedInlineConfig(config: string): void {
+  if (config.includes('"""') || config.includes("'''")) {
+    throw new Error(
+      "Codex config contains a multiline TOML string; setup will not edit it automatically. Use the manual configuration guide.",
+    );
+  }
+  const serverNamePattern = `(?:${CODEX_BRIDGE_SERVER_NAMES.flatMap((name) => [name, `"${name}"`]).join("|")})`;
+  const inlineOrDottedAssignment = new RegExp(`^\\s*mcp_servers\\s*\\.\\s*${serverNamePattern}\\s*(?:\\.|=)`, "m");
+  if (inlineOrDottedAssignment.test(config)) {
+    throw new Error(
+      "found an inline/dotted dsh-Agentlink MCP configuration; remove or convert it to table form before running setup",
+    );
+  }
+
+  const lines = config.split(/\r?\n/);
+  let inMcpServersTable = false;
+  for (const line of lines) {
+    const header = tableHeader(line);
+    const name = header?.name;
+    if (header !== undefined && header.array && isBridgeTable(header.name)) {
+      throw new Error(
+        "found an array-table dsh-Agentlink MCP configuration; remove or convert it to table form before running setup",
+      );
+    }
+    if (name !== undefined && CODEX_BRIDGE_SERVER_NAMES.some((serverName) => name.includes(serverName)) && !isBridgeTable(name)) {
+      throw new Error(
+        "found a non-standard dsh-Agentlink table; setup will not guess how to rewrite it. Use the manual configuration guide.",
+      );
+    }
+    if (header !== undefined) inMcpServersTable = !header.array && header.name === "mcp_servers";
+    else if (inMcpServersTable && new RegExp(`^\\s*${serverNamePattern}\\s*=`).test(line)) {
+      throw new Error(
+        "found an inline dsh-Agentlink value under [mcp_servers]; remove or convert it to table form before running setup",
+      );
+    }
+  }
+}
+
+function assertBasicTomlTableSyntax(config: string): void {
+  const tableHeader = /^(?:\[[^\[\]]+\]|\[\[[^\[\]]+\]\])\s*(?:#.*)?$/;
+  for (const line of config.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("[") && !tableHeader.test(trimmed)) {
+      throw new Error("Codex config contains an unsupported TOML table header; setup will not edit it automatically.");
+    }
+  }
+}
+
+export function upsertMcpConfig(config: string, bridgeBlock: string, replace: boolean): string {
+  rejectUnsupportedInlineConfig(config);
+  assertBasicTomlTableSyntax(config);
+  const exists = hasBridgeConfig(config);
+  if (exists && !replace) {
+    throw new Error(
+      `Codex MCP server ${CODEX_SERVER_NAME} or legacy ${CODEX_LEGACY_SERVER_NAMES.join(", ")} already exists; rerun with --replace after reviewing it`,
+    );
+  }
+
+  const kept: string[] = [];
+  let omit = false;
+  for (const line of config.split(/\r?\n/)) {
+    const name = anyTableName(line);
+    if (name !== undefined) omit = isBridgeTable(name);
+    if (!omit) kept.push(line);
+  }
+
+  const prefix = kept.join("\n").trimEnd();
+  return `${prefix === "" ? "" : `${prefix}\n\n`}${bridgeBlock.trim()}\n`;
+}
+
+export function defaultCodexConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  const configuredRoot = env.CODEX_HOME?.trim();
+  return join(configuredRoot === undefined || configuredRoot === "" ? join(homedir(), ".codex") : resolve(configuredRoot), "config.toml");
+}
+
+function buildEnv(options: RenderMcpConfigOptions): Record<string, string> {
+  if (options.hostProtocol === "sdk") {
+    if (options.preset !== undefined && options.preset.trim() !== "") {
+      throw new Error(
+        "the SDK backend cannot honor an agent preset: the SDK wire carries no preset field and the runtime profile fixes composition. Rerun with --no-preset (or omit --preset) when using --backend sdk.",
+      );
+    }
+    return sdkMcpEnv(requireSdkRenderConfig(options.sdk));
+  }
+  return {
+    ...(options.hostProtocol === "gateway" ? { DSH_HOST_PROTOCOL: "gateway" } : {}),
+    ...(options.hostMode === "desktop-auto"
+      ? { DSH_HOST_MODE: "desktop-auto" }
+      : { DSH_HOST_URL: options.hostUrl }),
+    ...(options.dshVersion === undefined ? {} : { DSH_HOST_VERSION: options.dshVersion }),
+    ...(options.preset === undefined ? {} : { DSH_BRIDGE_AGENT_PRESET: options.preset }),
+  };
+}
+
+function requireSdkRenderConfig(sdk: SdkRenderConfig | undefined): SdkRenderConfig {
+  if (sdk === undefined) {
+    throw new Error("the SDK backend requires sdk settings: dshHome and profile");
+  }
+  if (typeof sdk.dshHome !== "string" || sdk.dshHome.trim() === "") {
+    throw new Error("the SDK backend requires a non-empty DSH home");
+  }
+  if (typeof sdk.profile !== "string" || sdk.profile.trim() === "") {
+    throw new Error("the SDK backend requires a non-empty SDK profile name");
+  }
+  if ((sdk.provider === undefined) !== (sdk.model === undefined)) {
+    throw new Error("DSH_SDK_PROVIDER and DSH_SDK_MODEL must be provided together");
+  }
+  return sdk;
+}
+
+/**
+ * The exact environment an SDK-backend MCP server receives.
+ *
+ * Fixed key order, and only the two required variables plus whatever the user
+ * explicitly supplied: never a Host URL, connect-token variable, model API key,
+ * or other credential.
+ */
+export function sdkMcpEnv(sdk: SdkRenderConfig): Record<string, string> {
+  const config = requireSdkRenderConfig(sdk);
+  return {
+    DSH_HOST_PROTOCOL: "sdk",
+    DSH_HOME: config.dshHome.trim(),
+    DSH_SDK_PROFILE: config.profile.trim(),
+    ...(config.bin === undefined ? {} : { DSH_SDK_BIN: config.bin }),
+    ...(config.provider === undefined || config.model === undefined
+      ? {}
+      : { DSH_SDK_PROVIDER: config.provider, DSH_SDK_MODEL: config.model }),
+    ...(config.reasoningEffort === undefined ? {} : { DSH_SDK_REASONING_EFFORT: config.reasoningEffort }),
+    ...(config.maxRuntimes === undefined ? {} : { DSH_SDK_MAX_RUNTIMES: String(config.maxRuntimes) }),
+    ...(config.idleTimeoutMs === undefined ? {} : { DSH_SDK_IDLE_TIMEOUT_MS: String(config.idleTimeoutMs) }),
+    ...(config.initializeTimeoutMs === undefined
+      ? {}
+      : { DSH_SDK_INITIALIZE_TIMEOUT_MS: String(config.initializeTimeoutMs) }),
+    ...(config.shutdownTimeoutMs === undefined ? {} : { DSH_SDK_SHUTDOWN_TIMEOUT_MS: String(config.shutdownTimeoutMs) }),
+    ...(config.bridgeHome === undefined ? {} : { DSH_BRIDGE_HOME: config.bridgeHome }),
+  };
+}
+
+/**
+ * One reviewable JSON object for `--dry-run --backend sdk`.
+ *
+ * Nothing is written; the same no-secret rule as the TOML block applies.
+ */
+export function renderSdkConfigReview(options: {
+  serverName: string;
+  configPath: string;
+  command: string;
+  args: readonly string[];
+  env: Record<string, string>;
+  warnings?: readonly string[];
+}): string {
+  return JSON.stringify(
+    {
+      backend: "sdk",
+      serverName: options.serverName,
+      configPath: options.configPath,
+      command: options.command,
+      args: [...options.args],
+      env: options.env,
+      humanApproval: { toolName: "dsh_resolve_approval", mode: "human-prompt" },
+      writes: false,
+      ...(options.warnings === undefined ? {} : { warnings: [...options.warnings] }),
+    },
+    null,
+    2,
+  );
+}
+
+function createCodexOperation(options: RenderMcpConfigOptions & { replace: boolean }): UpsertMcpServerOperation {
+  return {
+    kind: "upsert-mcp-server",
+    serverName: CODEX_SERVER_NAME,
+    legacyServerNames: CODEX_LEGACY_SERVER_NAMES,
+    command: options.nodePath,
+    args: [options.entryPath],
+    env: buildEnv(options),
+    ...(options.hostProtocol === "gateway" ? { envVars: ["DSH_CONNECT_TOKEN", "DSH_CONNECT_ORIGIN"] } : {}),
+    humanApproval: {
+      toolName: "dsh_resolve_approval",
+      mode: "human-prompt",
+    },
+    replace: options.replace,
+  };
+}
+
+export function createCodexInstallPlan(options: CodexInstallPlanOptions): InstallPlan {
+  const operation = createCodexOperation(options);
+  const targetDescription = "Codex MCP TOML config file";
+  return {
+    callerId: CODEX_CALLER_ID,
+    callerName: "Codex",
+    capabilities: CODEX_CAPABILITIES,
+    target: {
+      path: options.configPath,
+      format: "toml",
+      scope: options.configPath === defaultCodexConfigPath() ? "user" : "explicit-file",
+    },
+    targetDescription,
+    operations: [operation],
+    verification: [{ kind: "mcp-server-block-matches", serverName: CODEX_SERVER_NAME }],
+    warnings: [
+      `Existing ${CODEX_SERVER_NAME} or legacy ${CODEX_LEGACY_SERVER_NAMES.join(", ")} entries require explicit replacement approval.`,
+      "npm run setup installs the shipped Codex skill into the current repository's .agents/skills/codex-dsh-orchestrator directory unless --no-skill is provided.",
+      ...(options.hostProtocol === "sdk"
+        ? [
+            "The SDK backend needs neither DSH Desktop nor the Gateway launcher: the runtime is started per root task and closed by the bridge. It has no session catalog, no authoritative history, no model catalog, no steering, and no turn/queue cancel; approvals and native user questions are supported.",
+          ]
+        : []),
+      CODEX_RESTART_HINT,
+    ],
+    restartHint: CODEX_RESTART_HINT,
+  };
+}
+
+export function verifyCodexMcpBlock(content: string, bridgeBlock: string): boolean {
+  try {
+    rejectUnsupportedInlineConfig(content);
+    assertBasicTomlTableSyntax(content);
+  } catch {
+    return false;
+  }
+  return extractBridgeConfig(content) === bridgeBlock.trim();
+}
+
+export function verifyCodexMcpConfig(content: string, operation: UpsertMcpServerOperation): boolean {
+  return verifyCodexMcpBlock(content, renderCodexOperation(operation));
+}
+
+export const codexIntegration: CallerIntegration<CodexInstallPlanOptions> = {
+  id: CODEX_CALLER_ID,
+  name: "Codex",
+  capabilities: CODEX_CAPABILITIES,
+  defaultConfigPath(context) {
+    return defaultCodexConfigPath(context.env);
+  },
+  createInstallPlan: createCodexInstallPlan,
+  verifyInstalled(content, operation) {
+    if (operation.kind !== "upsert-mcp-server") return false;
+    return verifyCodexMcpConfig(content, operation);
+  },
+};
