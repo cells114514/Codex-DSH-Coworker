@@ -75,7 +75,7 @@ async function makeDirLink(target: string, linkPath: string): Promise<void> {
   }
 }
 
-test("SDK backend: an unknown observed running state is never derived as interrupted", async () => {
+test("SDK backend: unknown and idle observations cannot interrupt a running ledger turn", async () => {
   const home = await mkdtemp(join(tmpdir(), "bridge-sdk-inference-"));
   try {
     const api = new FakeSdkAwareDshApi();
@@ -100,12 +100,19 @@ test("SDK backend: an unknown observed running state is never derived as interru
     assert.equal(unknown.backend, "sdk");
     assert.equal(unknown.execution, "running", "unknown running state must not be read as an interruption");
 
+    // SDK turn/end sets the in-memory root idle before appending to the ledger.
+    connection.lineage = [{ sessionId: "root-session", found: true, origin: "root", running: false, historyCapability: "observed-cache" }];
+    const idle = await service.status(task.taskId);
+    assert.equal(idle.execution, "running", "an idle hint cannot end an SDK turn whose terminal is not yet durable");
+    assert.equal((await ledger.snapshot(task.taskId)).execution, "running");
+
     // A Host catalog reports `running` authoritatively, so the strict rule stays.
     connection.state = { ...connection.state, backend: "legacy", transport: "http-websocket" };
     connection.lineage = [
       { sessionId: "root-session", found: true, origin: "root", running: false, blank: false, historyCapability: "session.history" },
     ];
-    const hostBacked = await service.status(task.taskId);
+    const hostService = new BridgeService(config(home), new FakeDshApi(), tasks, connection, ledger);
+    const hostBacked = await hostService.status(task.taskId);
     assert.equal(hostBacked.execution, "interrupted");
     const log = await readFile(join(home, "ledgers", task.taskId, "events.jsonl"), "utf8");
     assert.equal(log.includes("host-reported-no-active-turn-after-history-reconciliation"), true);

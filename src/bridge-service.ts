@@ -1895,13 +1895,10 @@ export class BridgeService {
       queue = this.connection.queueForSession(task.sessionId);
       const activatedRoute = capabilities.modelCatalog ? undefined : await this.fixedRoute(task.sessionId, taskId);
       const models = capabilities.modelCatalog ? await this.api.sessionModels(task.sessionId) : undefined;
-      // "No active turn" is only a fact when the backend can actually report it.
-      // A Host catalog says `running: false` authoritatively; the SDK backend's
-      // observed state is `undefined` until it has seen a status transition, and
-      // treating that unknown as "not running" would stamp `interrupted` on a
-      // turn that is merely a few milliseconds old.
-      const rootRunningKnown = root.running !== undefined;
-      const absenceIsAuthoritative = rootRunningKnown || capabilities.backend !== "sdk";
+      // A Host catalog can confirm an inactive turn after history reconciliation.
+      // SDK activity is observed in-process and may show idle before turn/end is
+      // committed to the ledger. Only a durable event can end an SDK turn.
+      const absenceIsAuthoritative = capabilities.backend !== "sdk";
       let execution =
         pendingExecution ??
         (root.running === true
