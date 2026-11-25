@@ -175,6 +175,8 @@ describe("sdk bridge service", () => {
     original.cleanShutdown = false;
     delete original.cleanShutdownAt;
     original.owner = { ...original.owner, pid: 2147483647, bridgeInstanceId: "dead-test-owner" };
+    // The fake runtime PID (4321) can belong to an unrelated live CI process.
+    original.diagnostic = { ...original.diagnostic, runtimePid: 2147483646 };
     await writeFile(recordPath, JSON.stringify(original));
     const { factory, created } = fakeRuntimeFactory();
     const api = createSdkDshApi(s.config, s.config.sdk!, { clientFactory: factory, logger: () => undefined });
