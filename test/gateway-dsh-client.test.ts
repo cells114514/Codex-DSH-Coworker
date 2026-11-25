@@ -45,10 +45,19 @@ test("official session adapter preserves create/model/prompt contracts and durab
     assert.deepEqual((await api.sessionModels("sample")).current, {
       provider: "deepseek-account", model: "deepseek-flash", reasoningEffort: "high",
     });
-    const result = await api.sessionPrompt({ sessionId: "sample", mode: "queue", content: [{ type: "text", text: "read only" }] });
+    let registeredRequestId: string | undefined;
+    const result = await api.sessionPrompt(
+      { sessionId: "sample", mode: "queue", content: [{ type: "text", text: "read only" }] },
+      undefined,
+      async (requestId) => {
+        assert.equal(host.requests.some((item) => item.method === "session/prompt"), false);
+        registeredRequestId = requestId;
+      },
+    );
     assert.deepEqual(result, { accepted: true });
     const request = host.requests.find((item) => item.method === "session/prompt")!;
     assert.equal(typeof request.args.request.requestId, "string");
+    assert.equal(registeredRequestId, request.args.request.requestId);
     assert.equal(getDshUnaryMetadata(result).issuedRpcId, request.args.request.requestId);
     assert.equal(getDshUnaryMetadata(result).method, "session.prompt");
     assert.equal(host.requests.filter((item) => item.method === "session/prompt").length, 1);

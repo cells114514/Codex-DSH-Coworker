@@ -4,6 +4,7 @@ Dim fso, shell, base, command
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 base = fso.GetParentFolderName(WScript.ScriptFullName)
-command = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & base & "\coworker-tray.ps1"""
+shell.CurrentDirectory = base
+command = """" & shell.ExpandEnvironmentStrings("%SystemRoot%") & "\System32\WindowsPowerShell\v1.0\powershell.exe"" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & base & "\coworker-tray.ps1"" -StartSender"
 ' 0 = hidden window, False = do not wait
 shell.Run command, 0, False

@@ -1,25 +1,17 @@
-# Coworker sender: stop. STOP first so no delivery starts mid-stop, then end the
-# exact pid recorded in the heartbeat, then clear the marker.
-$ErrorActionPreference = "Continue"
-$outbox = if ($env:COWORKER_OUTBOX) { $env:COWORKER_OUTBOX } else { Join-Path $env:USERPROFILE ".dsh-sdk-test\codex-bridge-sdk\coworker-outbox" }
-$stopFile = Join-Path $outbox "STOP"
-$heartbeat = Join-Path $outbox ".sender-heartbeat"
+# Pause pending deliveries while stopping the sender for this exact outbox.
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'coworker-config.ps1')
+$outbox = Get-CoworkerOutbox
+$sender = Get-CoworkerSender $outbox
+if (-not $sender) { Write-Host 'No sender for this outbox is running.'; exit 0 }
 
-New-Item -ItemType File -Path $stopFile -Force | Out-Null
-
-$senderPid = $null
-if (Test-Path $heartbeat) {
-  $text = (Get-Content $heartbeat -TotalCount 1) -split '\s+' | Select-Object -First 1
-  $parsed = 0
-  if ([int]::TryParse($text, [ref]$parsed)) { $senderPid = $parsed }
+$stopFile = Join-Path $outbox 'STOP'
+$createdMarker = -not (Test-Path -LiteralPath $stopFile)
+if ($createdMarker) { New-Item -ItemType File -Path $stopFile | Out-Null }
+$process = Get-Process -Id $sender.Pid -ErrorAction SilentlyContinue
+if ($process -and -not $process.HasExited) {
+    Stop-Process -InputObject $process -ErrorAction Stop
+    if (-not $process.WaitForExit(5000)) { throw 'The sender did not exit, so the STOP marker has been retained.' }
 }
-if ($senderPid -and (Get-Process -Id $senderPid -ErrorAction SilentlyContinue)) {
-  Stop-Process -Id $senderPid -Force
-  Write-Host "stopped sender pid: $senderPid"
-} else {
-  Write-Host "no live sender pid recorded in the heartbeat"
-}
-
-Start-Sleep -Seconds 1
-Remove-Item $stopFile -ErrorAction SilentlyContinue
-Write-Host "STOP marker cleared: $(-not (Test-Path $stopFile))"
+if ($createdMarker) { Remove-Item -LiteralPath $stopFile }
+Write-Host "Stopped sender pid $($sender.Pid)."

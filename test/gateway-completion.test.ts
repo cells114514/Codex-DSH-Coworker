@@ -127,6 +127,31 @@ describe("real gateway field structure", () => {
     assert.equal(terminal.kind === "terminal" ? terminal.executionId : "", "e1");
   });
 
+  it("pins the already open turn when a matching user message arrives after turn/start", () => {
+    const tracker = liveTracker();
+    const started = { type: "turn/start", seq: 52, data: { turn: 6 } };
+    tracker.observe(TASK2, started);
+    tracker.observe(TASK2, { type: "user/message", seq: 53, data: { source: { rpcId: "desktop" } } });
+    assert.deepEqual(
+      tracker.observe(TASK2, { type: "user/message", seq: 54, data: { source: { rpcId: RPC } } }),
+      { kind: "consumed", executionId: "e1", turn: 6, seq: 54 },
+    );
+    assert.equal(tracker.observe(TASK2, turnEnd(57, 6)).kind, "terminal");
+    assert.equal(tracker.observe(TASK2, started).kind, "ignored");
+    assert.equal(tracker.observe(TASK2, turnEnd(57, 6)).kind, "duplicate");
+  });
+
+  it("does not use a replayed start to reopen a finished desktop turn", () => {
+    const tracker = liveTracker();
+    const started = { type: "turn/start", seq: 52, data: { turn: 6 } };
+    tracker.observe(TASK2, started);
+    assert.equal(tracker.observe(TASK2, turnEnd(55, 6)).kind, "unattributed");
+    assert.equal(tracker.observe(TASK2, started).kind, "ignored");
+    assert.equal(tracker.observe(TASK2, { type: "user/message", seq: 54, data: { source: { rpcId: RPC } } }).kind, "ignored");
+    tracker.observe(TASK2, { type: "turn/start", seq: 57, data: { turn: 7 } });
+    assert.equal(tracker.observe(TASK2, turnEnd(59, 7)).kind, "unattributed");
+  });
+
   it("ignores an external message and its turn", () => {
     const tracker = liveTracker();
     const other = tracker.observe(TASK2, { type: "user/message", seq: 52, data: { source: { kind: "user" } } });

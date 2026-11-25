@@ -46,6 +46,8 @@ The examples feed Desktop stdout directly to the existing `authorized-caller.js`
 
 ### Windows PowerShell
 
+For an existing Gateway installation, finish active work, quit both desktop apps, and double-click `Start-Gateway.cmd` in the repository root. It finds the installed Codex package, starts or reuses the Coworker sender for the Gateway outbox, and invokes the supported startup handoff below. Keep its window open. Run `Start-Gateway.cmd -DryRun` from a terminal to inspect the selected paths and running-app check.
+
 Use the bundled launcher below. It checks file paths, running apps and launch flags, then invokes a native batch pipe. Windows PowerShell 5.1 can buffer a direct PowerShell data pipeline until Desktop exits, leaving Codex unopened.
 
 Select the actual Codex GUI binary, which may be named `ChatGPT.exe` in the installed app package. A `codex.exe` on PATH may be the CLI instead. Recheck the GUI path after app updates.

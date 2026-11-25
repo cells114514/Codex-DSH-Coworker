@@ -3,50 +3,59 @@
 $ErrorActionPreference = "Stop"
 
 $repo = Split-Path -Parent $PSScriptRoot
-$outbox = if ($env:COWORKER_OUTBOX) { $env:COWORKER_OUTBOX } else { Join-Path $env:USERPROFILE ".dsh-sdk-test\codex-bridge-sdk\coworker-outbox" }
+. (Join-Path $PSScriptRoot 'coworker-config.ps1')
+$outbox = Get-CoworkerOutbox
 $kernel = if ($env:COWORKER_KERNEL) {
   $env:COWORKER_KERNEL
 } else {
-  $pkg = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue | Select-Object -First 1
+  $pkg = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
   if ($pkg) {
     $candidate = Join-Path $pkg.InstallLocation "app\resources\codex.exe"
     if (Test-Path $candidate) { $candidate }
   }
 }
-$heartbeat = Join-Path $outbox ".sender-heartbeat"
+$senderScript = Join-Path $repo 'docs\operator-tools\coworker-sender.mjs'
 
+if (Test-Path -LiteralPath (Join-Path $outbox 'STOP')) { throw "A STOP marker is present in $outbox." }
 if (-not (Test-Path $outbox)) { New-Item -ItemType Directory -Path $outbox -Force | Out-Null }
-if (-not $kernel) { Write-Host "blueprint: set COWORKER_KERNEL to the Codex kernel executable"; exit 1 }
-
-function Get-LiveSenderPid {
-  if (-not (Test-Path $heartbeat)) { return $null }
-  if (((Get-Date) - (Get-Item $heartbeat).LastWriteTime).TotalSeconds -gt 30) { return $null }
-  $text = (Get-Content $heartbeat -TotalCount 1) -split '\s+' | Select-Object -First 1
-  $candidate = 0
-  if (-not [int]::TryParse($text, [ref]$candidate)) { return $null }
-  if (-not (Get-Process -Id $candidate -ErrorAction SilentlyContinue)) { return $null }
-  return $candidate
+if (-not $kernel -or -not (Test-Path -LiteralPath $kernel -PathType Leaf)) {
+  throw 'Set COWORKER_KERNEL to an existing Codex kernel executable.'
 }
 
-$live = Get-LiveSenderPid
-if ($live) { Write-Host "sender already running: pid $live"; exit 0 }
+$existing = Get-CoworkerSender $outbox
+if ($existing) {
+  if (-not $existing.Kernel) { throw 'The existing sender has no identifiable kernel. Stop it before starting another sender.' }
+  if (Test-Path -LiteralPath $existing.Kernel -PathType Leaf) {
+    if (-not $existing.Fresh) { throw 'The existing sender heartbeat is stale. Check it before starting another sender.' }
+    Write-Host "sender already running: pid $($existing.Pid)"
+    exit 0
+  }
+  # A Windows Store update can remove the kernel while the sender stays alive.
+  $oldProcess = Get-Process -Id $existing.Pid -ErrorAction Stop
+  Stop-Process -InputObject $oldProcess -ErrorAction Stop
+  if (-not $oldProcess.WaitForExit(5000)) { throw 'The sender using the removed kernel did not exit.' }
+  Write-Host "Replaced sender with missing Codex kernel: pid $($existing.Pid)"
+}
 
 $node = (Get-Command node).Source
 $arguments = @(
-  "`"$repo\docs\operator-tools\coworker-sender.mjs`"",
+  "`"$senderScript`"",
   "--outbox", "`"$outbox`"",
   "--kernel", "`"$kernel`"",
   "--interval", "2"
 )
-Start-Process -FilePath $node -ArgumentList $arguments -WindowStyle Hidden
+$started = Start-Process -FilePath $node -ArgumentList $arguments -WorkingDirectory $repo -WindowStyle Hidden -PassThru
 
 $deadline = (Get-Date).AddSeconds(15)
 while ((Get-Date) -lt $deadline) {
-  $live = Get-LiveSenderPid
-  if ($live) { break }
+  if ($started.HasExited) { throw "The Coworker sender exited during startup (code $($started.ExitCode))." }
+  $live = Get-CoworkerSender $outbox
+  if ($live -and $live.Pid -eq $started.Id -and $live.Fresh) {
+    Write-Host "sender pid: $($live.Pid)"
+    Write-Host "outbox:    $outbox"
+    Write-Host "kernel:    $kernel"
+    exit 0
+  }
   Start-Sleep -Milliseconds 500
 }
-if (-not $live) { Write-Host "sender did not become ready: no fresh heartbeat in $outbox"; exit 1 }
-Write-Host "sender pid: $live"
-Write-Host "outbox:    $outbox"
-Write-Host "kernel:    $kernel"
+throw "Sender did not become ready: no fresh heartbeat in $outbox."

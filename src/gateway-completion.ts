@@ -41,6 +41,8 @@ export interface GatewayTaskState {
   executions: Map<string, GatewayExecution>;
   byRequest: Map<string, string>;
   seenSeqs: Set<number>;
+  /** Last observed root turn boundary, including the sequence at which it occurred. */
+  turnBoundary?: { seq: number; turn: number | null; open: boolean };
 }
 
 export type GatewayObservation =
@@ -153,8 +155,8 @@ export class GatewayCompletionTracker {
   }
 
   /**
-   * Feed one durable session event. `turn/start` and queue frames are irrelevant to
-   * attribution and are reported as ignored instead of being interpreted.
+   * Feed one durable session event. Only a user message with a matching durable
+   * request id can establish ownership; turn boundaries locate its consuming turn.
    */
   observe(taskId: string, event: GatewayEventLike): GatewayObservation {
     const state = this.tasks.get(taskId);
@@ -174,6 +176,9 @@ export class GatewayCompletionTracker {
           : { kind: "duplicate", executionId: settled.executionId, seq };
       }
       state.seenSeqs.add(seq);
+      if (state.turnBoundary === undefined || seq > state.turnBoundary.seq) {
+        state.turnBoundary = { seq, turn, open: false };
+      }
       const owned = [...state.executions.values()].find(
         (entry) => entry.state === "consumed" && entry.turn !== null && entry.turn === turn,
       );
@@ -192,16 +197,24 @@ export class GatewayCompletionTracker {
     }
 
     if (type === "turn/start") {
-      // A queued message has no turn of its own in this contract: the turn that
-      // starts after it is the one that consumes it.
+      if (seq === undefined) return { kind: "ignored", reason: "turn-start-without-seq" };
+      if (seq <= state.baselineSeq) return { kind: "ignored", reason: "below-baseline" };
+      const previous = state.turnBoundary;
+      if (previous !== undefined && seq <= previous.seq) {
+        return { kind: "ignored", reason: "older-turn-boundary" };
+      }
+      const turn = typeof data.turn === "number" ? data.turn : null;
+      state.turnBoundary = { seq, turn, open: true };
+      if (turn === null) return { kind: "ignored", reason: "turn-start-without-turn" };
+
+      // Some Gateway traces record the accepted message just before turn/start.
       const waiting = [...state.executions.values()].find(
-        (entry) => entry.state === "consumed" && entry.turn === null && seq !== undefined && entry.consumedSeq !== undefined && seq > entry.consumedSeq,
+        (entry) => entry.state === "consumed" && entry.turn === null && entry.consumedSeq !== undefined &&
+          seq > entry.consumedSeq && (previous === undefined || entry.consumedSeq > previous.seq),
       );
       if (waiting === undefined) return { kind: "ignored", reason: "no-consumed-execution" };
-      const turn = typeof data.turn === "number" ? data.turn : null;
-      if (turn === null) return { kind: "ignored", reason: "turn-start-without-turn" };
       waiting.turn = turn;
-      return { kind: "recheck", executionId: waiting.executionId, turn, seq: seq as number };
+      return { kind: "recheck", executionId: waiting.executionId, turn, seq };
     }
 
     if (type === "assistant/message") {
@@ -231,7 +244,14 @@ export class GatewayCompletionTracker {
     if (executionId === undefined) return { kind: "ignored", reason: "request-not-from-bridge" };
     const record = state.executions.get(executionId);
     if (record === undefined || record.state === "settled") return { kind: "ignored", reason: "execution-settled" };
-    const turn = typeof data.turn === "number" ? data.turn : null;
+    const boundary = state.turnBoundary;
+    const explicitTurn = typeof data.turn === "number" ? data.turn : null;
+    if (explicitTurn === null && boundary !== undefined && seq <= boundary.seq) {
+      return { kind: "ignored", reason: "message-before-latest-turn-boundary" };
+    }
+    // The Gateway can emit turn/start before the matching user message. The
+    // request id proves ownership, and an open boundary identifies its turn.
+    const turn = explicitTurn ?? (boundary?.open === true ? boundary.turn : null);
     record.turn = turn;
     record.state = "consumed";
     record.consumedSeq = seq;

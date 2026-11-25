@@ -1,8 +1,15 @@
 # Changelog
 
-This file records user-visible changes to Codex-DSH-Orchestrator. The project
+This file records user-visible changes to Codex-DSH-Coworker. The project
 is distributed as source code; `package.json` remains private and this file
 does not announce an npm publication.
+
+## Unreleased
+
+- Register Gateway submissions before sending them and match user messages to an already-open turn.
+- Add a Windows Gateway launcher and use the configured backend in the sender tray.
+- Replace a sender whose Codex kernel disappeared and leave queued notifications pending while the kernel is unavailable.
+- Document setup, chat binding, and delivery troubleshooting in the Chinese README.
 
 ## Coworker source publication
 

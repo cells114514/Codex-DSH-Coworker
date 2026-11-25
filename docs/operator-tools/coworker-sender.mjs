@@ -10,7 +10,7 @@
  * the sender must not depend on any observation call to make progress.
  */
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 function parseArgs(argv) {
@@ -114,6 +114,13 @@ function deliver(options, record) {
 async function loop(options) {
   const results = [];
   for (let round = 0; round < (options.once ? 1 : Number.MAX_SAFE_INTEGER); round += 1) {
+    if (options.stub === undefined && options.kernel !== undefined) {
+      const kernel = await stat(options.kernel).catch(() => undefined);
+      if (kernel?.isFile() !== true) {
+        process.stderr.write("Coworker sender stopped: the configured Codex kernel is unavailable. Restart the sender with the current installation.\n");
+        return 1;
+      }
+    }
     await heartbeat(options.outbox);
     const records = (await pendingRecords(options.outbox)).slice(0, options.max);
     if (records.length === 0) {

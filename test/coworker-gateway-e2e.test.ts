@@ -44,6 +44,7 @@ function fakeHost(dshHome: string, cwd: string) {
   const calls = [];
   const events = [];
   let seq = 5;
+  let emitBeforeReceipt: (() => void) | undefined;
   const api = {
     backend: "gateway",
     capabilities: hostBackendCapabilities("gateway"),
@@ -65,8 +66,13 @@ function fakeHost(dshHome: string, cwd: string) {
       calls.push("routeInfo");
       return attachDshUnaryMetadata({ provider: "deepseek-official", model: "deepseek-v4.1-flash" }, { issuedRpcId: "r4", method: "route.info" });
     },
-    async sessionPrompt() {
+    beforePromptReceipt(emit: () => void) {
+      emitBeforeReceipt = emit;
+    },
+    async sessionPrompt(_payload: unknown, _signal?: AbortSignal, beforeGatewaySend?: (requestId: string) => Promise<void>) {
+      await beforeGatewaySend?.(REQUEST);
       calls.push("sessionPrompt");
+      emitBeforeReceipt?.();
       return attachDshUnaryMetadata({ accepted: true, messageId: "msg-1" }, { issuedRpcId: REQUEST, method: "session.prompt" });
     },
     async sessionHistory() {
@@ -209,6 +215,12 @@ describe("gateway completion end to end", () => {
     const taskId = attached.taskId;
     assert.ok(taskId, JSON.stringify(attached).slice(0, 300));
 
+    // The live Gateway opened the turn while its prompt receipt was still in flight.
+    h.api.beforePromptReceipt(() => {
+      const started = { type: "turn/start", seq: 6, data: { turn: 1 } };
+      h.api.emit(started);
+      h.connection.emit(taskId, started);
+    });
     const followed = parse(
       await h.client.callTool({
         name: "dsh_followup",
@@ -217,11 +229,14 @@ describe("gateway completion end to end", () => {
     );
     assert.equal(followed.coworker?.callbackReady, true, JSON.stringify(followed).slice(0, 400));
 
-    // Host emits the durable events for the turn that consumed our submission.
-    h.api.emit({ type: "user/message", seq: 6, data: { turn: 1, source: { requestId: REQUEST }, content: [] } });
-    h.connection.emit(taskId, { type: "user/message", seq: 6, data: { turn: 1, source: { requestId: REQUEST } } });
-    h.api.emit({ type: "assistant/message", seq: 7, data: { turn: 1, message: { content: [{ type: "text", text: "2" }] } } });
-    h.connection.emit(taskId, { type: "turn/end", seq: 7, data: { turn: 1, reason: { kind: "completed" } } });
+    // The later user event carries a durable request id but no explicit turn number.
+    const message = { type: "user/message", seq: 7, data: { source: { rpcId: REQUEST }, content: [] } };
+    const terminal = { type: "turn/end", seq: 9, data: { turn: 1, reason: { kind: "completed" } } };
+    h.api.emit(message);
+    h.connection.emit(taskId, message);
+    h.api.emit({ type: "assistant/message", seq: 8, data: { turn: 1, message: { content: [{ type: "text", text: "2" }] } } });
+    h.api.emit(terminal);
+    h.connection.emit(taskId, terminal);
     await new Promise((done) => setTimeout(done, 80));
 
     const written = await readRecords(h.outbox);

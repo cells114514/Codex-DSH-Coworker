@@ -161,11 +161,16 @@ export class GatewayDshClient implements DshApi {
     return this.rpc("session/selectModel", { request: payload }, dshSessionSelectModelValueSchema, signal);
   }
 
-  async sessionPrompt(payload: Parameters<DshApi["sessionPrompt"]>[0], signal?: AbortSignal) {
+  async sessionPrompt(
+    payload: Parameters<DshApi["sessionPrompt"]>[0],
+    signal?: AbortSignal,
+    beforeGatewaySend?: (requestId: string) => Promise<void>,
+  ) {
     // In the Gateway protocol the durable user/message source correlates to
     // requestId, not to the carrier's separate RPC id. Keep the bridge ledger
     // metadata tied to that durable identity so follow-up/result folding works.
     const requestId = randomUUID();
+    await beforeGatewaySend?.(requestId);
     const result = await this.wire.call("session/prompt", { request: { ...payload, requestId } }, dshSessionPromptValueSchema, signal);
     return attachDshUnaryMetadata(result.value, { issuedRpcId: requestId, method: "session.prompt" });
   }

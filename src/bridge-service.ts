@@ -1237,14 +1237,12 @@ export class BridgeService {
    * Register one bridge submission. Without this record no turn can be attributed to
    * the bridge, so turns started directly in DSH Desktop never produce a record.
    */
-  private async beginGatewayExecution(taskId: string, sessionId: string, requestId: string | undefined): Promise<boolean> {
-    if (!this.completionSupported() || requestId === undefined) return false;
+  private async beginGatewayExecution(taskId: string, sessionId: string, requestId: string): Promise<void> {
     const counter = new ExecutionCounter(this.config.homeDir);
     const next = (await counter.load(taskId)) + 1;
     await counter.persist(taskId, next);
     const baselineSeq = await this.sessionBaseline(sessionId);
     this.gatewayCompletion.begin(taskId, { sessionId, executionId: `e${next}`, requestId, baselineSeq });
-    return true;
   }
 
   /** Verify the settled turn is readable, then write exactly one completion record. */
@@ -1253,8 +1251,8 @@ export class BridgeService {
     if (binding === undefined) return;
     const state = this.gatewayCompletion.state(taskId);
     const record = state?.executions.get(executionId);
-    if (state === undefined || record === undefined || record.turn === null) return;
-    const turn = record.turn;
+    if (state === undefined || record?.pendingTerminal === undefined) return;
+    const turn = record.pendingTerminal.turn;
     const history = await this.api.sessionHistory(state.sessionId, { maxMessages: 40 }).catch(() => undefined);
     const events =
       (history as { events?: Array<{ event: { type?: string; data?: { turn?: unknown } } }> } | undefined)?.events ?? [];
@@ -1490,17 +1488,17 @@ export class BridgeService {
     let promptTrackingWarning: string | undefined;
     let promptIssuedRpcId: string | undefined;
     try {
-      const promptReceipt = await this.api.sessionPrompt(promptPayload(this.config, created.sessionId, prompt, "queue"));
+      const beforeGatewaySend = this.capabilities.backend === "gateway" && coworkerCallback?.registered === true
+        ? (requestId: string) => this.beginGatewayExecution(task.taskId, created.sessionId, requestId)
+        : undefined;
+      const promptReceipt = await this.api.sessionPrompt(
+        promptPayload(this.config, created.sessionId, prompt, "queue"), undefined, beforeGatewaySend,
+      );
       if (visualFallback !== undefined) {
         fallbackCoordinationWarning = await this.recordVisualFallback(task.taskId, created.sessionId, visualFallback);
       }
       const issuedRpcId = getDshUnaryMetadata(promptReceipt).issuedRpcId;
       promptIssuedRpcId = issuedRpcId;
-      if (coworkerCallback?.registered === true) {
-        await this.beginGatewayExecution(task.taskId, created.sessionId, issuedRpcId).catch((error: unknown) => {
-          promptTrackingWarning = `${promptTrackingWarning ?? ""} execution attribution not recorded: ${String(error)}`.trim();
-        });
-      }
       await this.ledger
         .append(task.taskId, {
           sourceSessionId: created.sessionId,
@@ -1720,7 +1718,12 @@ export class BridgeService {
           outboxDir: existingBinding.outboxDir,
         };
       }
-      receipt = await this.api.sessionPrompt(promptPayload(this.config, task.sessionId, trimmed, mode));
+      const beforeGatewaySend = this.capabilities.backend === "gateway" && followupCoworker?.registered === true
+        ? (requestId: string) => this.beginGatewayExecution(taskId, task.sessionId, requestId)
+        : undefined;
+      receipt = await this.api.sessionPrompt(
+        promptPayload(this.config, task.sessionId, trimmed, mode), undefined, beforeGatewaySend,
+      );
       if (visualFallback !== undefined) {
         fallbackCoordinationWarning = await this.recordVisualFallback(task.taskId, task.sessionId, visualFallback);
       }
@@ -1738,10 +1741,6 @@ export class BridgeService {
       );
     }
     const issuedRpcId = getDshUnaryMetadata(receipt).issuedRpcId;
-    if (followupCoworker?.registered === true) {
-      // The follow-up is the only place a Gateway task gets an attributable execution.
-      await this.beginGatewayExecution(taskId, task.sessionId, issuedRpcId).catch(() => undefined);
-    }
     let coordinationWarning: string | undefined;
     await this.ledger
       .append(taskId, {

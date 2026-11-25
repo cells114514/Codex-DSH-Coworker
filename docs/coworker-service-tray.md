@@ -5,11 +5,13 @@
 
 ## 1. 启动托盘
 
+双击仓库里的 `tools/coworker-tray.vbs`，托盘会读取当前 Codex MCP 后端和通知目录，再启动或复用发送器。Gateway 和 SDK 都从现有的 `dsh_agentlink` 配置定位通知目录，且不会使用已移除的 Codex 内核。托盘启动适用于两个桌面应用已打开的情况。如果需要一起启动 Codex 和 DSH Desktop，请使用仓库根目录的 `Start-Gateway.cmd`。
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File "<仓库根>\tools\coworker-tray.ps1"
 ```
 
-或从托盘菜单勾选「开机自启」，之后登录自动出现图标（写入 Startup 快捷方式 `coworker-tray.lnk`）。
+从托盘菜单勾选「开机自启」后，下次登录时会自动显示图标并启动发送器（写入 Startup 快捷方式 `coworker-tray.lnk`）。
 
 同一会话只允许一个托盘实例；重复启动会立即静默退出。
 
@@ -28,7 +30,7 @@ powershell -ExecutionPolicy Bypass -File "<仓库根>\tools\coworker-tray.ps1"
 | 开机自启 | 勾选/取消 Startup 快捷方式 |
 | 退出 | 关闭托盘（不会停止发送器） |
 
-判定“运行中”的依据是**心跳新鲜（≤30 s）+ 该 pid 仍存活**，不看进程名，因此残留心跳或复用 pid 都不会被误判。
+托盘检查心跳是否在 30 秒内、进程是否为该 outbox 的发送器，以及发送器使用的 Codex 内核是否仍存在。
 
 ## 3. 什么时候需要怎么做
 

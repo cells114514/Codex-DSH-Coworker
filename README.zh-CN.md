@@ -73,7 +73,36 @@ setup 注册 bridge，为审批保留 `approval_mode = "prompt"`，并复制 `SK
 
 官方 Gateway 通过私有内存管道把 Desktop 启动授权交给新启动的 Codex。**这一步会启动 Desktop 和 Codex，执行前需要先正常退出两个应用。请先结束当前工作，再按 [Win/Mac 启动步骤](docs/official-desktop-gateway.md#operator-startup)操作。**使用期间保持该终端运行。
 
-受控启动后，通过 `/mcp` 或设置确认 `dsh_agentlink`，用 `/skills` 或 `$codex-dsh-orchestrator` 确认 Skill。随后仅调用 `dsh_host_status` 检查连接，不创建任务、不调用模型。该调用会按需交换授权、建立 Gateway API Peer；doctor 则有意将这一步报告为 `not_probed`。
+受控启动后，通过 `/mcp` 或设置确认 `dsh_agentlink`，用 `/skills` 或 `$codex-dsh` 确认 Skill。随后仅调用 `dsh_host_status` 检查连接，不创建任务、不调用模型。该调用会按需交换授权、建立 Gateway API Peer；doctor 则有意将这一步报告为 `not_probed`。
+
+### Windows 一键启动与完成通知
+
+安装完成后，先结束正在运行的任务并正常退出 Codex 和 DeepSeek Harness Desktop（包括托盘实例）。双击仓库根目录的 [Start-Gateway.cmd](Start-Gateway.cmd)。脚本会查找当前安装的 Codex，启动或复用通知发送器，再启动两端并完成 Gateway 授权。**使用期间保持启动终端打开。**
+
+在 PowerShell 中运行 `.\Start-Gateway.cmd -DryRun` 可以预览应用路径、通知目录和需要退出的进程。macOS 请使用 [Gateway 手动启动流程](docs/official-desktop-gateway.md#macos-terminal)。
+
+如果两端已经打开、只是通知发送器离线，双击 [coworker-tray.vbs](tools/coworker-tray.vbs) 即可。托盘会按当前的 Gateway 或 SDK 配置选择通知目录，并使用当前安装的 Codex 内核。若托盘还在运行旧脚本，先从托盘菜单退出，再双击新版脚本。[托盘操作说明](docs/coworker-service-tray.md)
+
+### 在 Codex 中绑定 DSH 原会话
+
+1. 在 DSH Desktop 打开目标会话，等它空闲，并记下准确标题。
+2. 在希望收到通知的 Codex 聊天中，选择安装好的 `$codex-dsh` Skill，并提供该 **Codex 聊天的完整 UUID**。DSH 会话 ID 由 Bridge 查询并核对。找不到唯一匹配时，请先确认目标会话。
+3. 使用下面的提示词，将括号内的内容换成你自己的。
+
+> 请通过 Gateway 附着到 DSH Desktop 会话「<准确标题>」，在同一会话执行以下任务。完成通知绑定到当前 Codex 聊天，UUID 为 `<完整 UUID>`。如果 `callbackReady=true`，请结束当前轮，收到通知后用 `dsh_status` 读取结果。任务：<任务内容>
+
+后续用 `dsh_followup` 继续同一个任务，可以沿用原来的通知绑定。Gateway 单轮完整回调已在 Windows 实机验证，连续两轮复用绑定和失败通知的验证范围见[验收记录](docs/desktop-coworker-validation.md)。
+
+### 常见问题
+
+| 状态 | 怎么处理 |
+| --- | --- |
+| `auth_required` | 等任务结束后正常退出两端，通过 `Start-Gateway.cmd` 或对应平台的 Gateway 启动器重新授权。 |
+| `callbackReady=false` 或 `senderReady=false` | 若工具已返回任务编号，先保留任务并查一次状态。Windows 可用托盘恢复对应目录的发送器。 |
+| `pending` | 完成通知已写入，等待发送器。恢复发送器后会处理待发送记录，无需重跑 DSH。 |
+| `acknowledged` | Codex 队列已接受通知。打开绑定的聊天确认通知是否已出现。 |
+| `delivery_unknown` | 检查目标聊天是否已收到对应事件，并查看发送记录中的诊断。系统不会自动重投这条通知。 |
+| `events.lock` | Bridge 暂时未能读取任务事件。先检查相关 Bridge 进程及锁状态，再决定是否续接原任务。 |
 
 ### 换机与回滚
 
@@ -124,7 +153,7 @@ npm run setup -- --backend sdk --yes --no-preset --dry-run
 
 > 请委派给 DSH 完成这个有明确范围的任务，按当前项目状态交接，并由 Codex 审阅结果。
 
-可用 `$codex-dsh-orchestrator` 显式调用，也可使用自然语言委派。Skill 根据进度、Git 状态、重点文件、测试和限制组织 compact handoff，让 DSH 先读重点文件。Bridge 不会自动取得此前的调用方对话。
+可用 `$codex-dsh` 显式调用，也可使用自然语言委派。Skill 根据进度、Git 状态、重点文件、测试和限制组织 compact handoff，让 DSH 先读重点文件。Bridge 不会自动取得此前的调用方对话。
 
 同一已知任务使用 `dsh_followup`。跨 Codex 对话接续时，先由仅元数据 `dsh_find_sessions` 找到精确 canonical 工作区内唯一 mapped、idle root，再以新鲜 title/cwd/update 前置条件执行 `dsh_attach_session`。标题或措辞相似不足以决定复用。保留上下文能减少重复读取，也可能增加输入 token；Host 没有文档化用量遥测时，provider cache 证据保持 `not_exposed`。
 

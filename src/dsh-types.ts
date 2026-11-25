@@ -599,6 +599,7 @@ export interface DshApi {
       clientTimeZone?: string;
     },
     signal?: AbortSignal,
+    beforeGatewaySend?: (requestId: string) => Promise<void>,
   ): Promise<DshUnaryResult<DshSessionPromptValue>>;
   sessionRename(
     sessionId: string,
