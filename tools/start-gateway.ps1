@@ -43,6 +43,9 @@ if ($DryRun) {
 if ($runningApps.Count -gt 0) { throw 'Finish active work and quit Codex and DeepSeek Harness, including tray instances, then run Start-Gateway.cmd again.' }
 if (Test-Path -LiteralPath (Join-Path $outbox 'STOP')) { throw "The sender is stopped by the STOP marker in $outbox." }
 
+& (Join-Path $PSScriptRoot 'repair-gateway-event-locks.ps1') -BridgeHome $config.BridgeHome -Apply |
+    Format-Table -AutoSize | Out-Host
+
 $previousOutbox = $env:COWORKER_OUTBOX
 $previousKernel = $env:COWORKER_KERNEL
 try {
